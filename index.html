@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>地图定点问卷</title>
+    <style>
+        /* --- 全局与容器样式 --- */
+        body {
+            background-color: #f0f2f5;
+            margin: 0;
+            padding: 20px 0;
+            color: #333;
+            /* 移除 overscroll-behavior: none，让滚动体验更原生 */
+        }
+
+        .custom-map-widget {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            width: 100%;
+            max-width: 600px;
+            margin: 0 auto;
+            background: #fff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            /* 🔴 修复关键：移除 touch-action: none，允许容器内部（除地图外）触发页面滚动 */
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        }
+
+        /* --- 1. 顶部标题 --- */
+        .widget-title {
+            padding: 18px 16px;
+            text-align: center;
+            font-size: 18px;
+            font-weight: 700;
+            color: #1f2937;
+            background: #fff;
+            border-bottom: 1px solid #f0f0f0;
+            z-index: 21;
+        }
+
+        /* 分割标题 */
+        .section-divider-title {
+            background-color: #fafafa;
+            border-top: 1px solid #eee;
+            border-bottom: 1px solid #eee;
+            padding: 12px 16px;
+            font-size: 15px;
+            font-weight: 600;
+            color: #666;
+            display: flex;
+            align-items: center;
+        }
+        .section-divider-title::before {
+            content: '';
+            display: inline-block;
+            width: 4px;
+            height: 16px;
+            background-color: #2563eb;
+            margin-right: 8px;
+            border-radius: 2px;
+        }
+
+        /* --- 2. 功能按钮栏 --- */
+        .action-bar {
+            padding: 12px 15px;
+            background: #fff;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            gap: 10px;
+            z-index: 20;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 10px 0;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+            /* 防止移动端点击高亮背景 */
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .btn:active { transform: scale(0.98); }
+        
+        .btn-reset {
+            background-color: #f3f4f6;
+            color: #4b5563;
+        }
+
+        .btn-submit {
+            background-color: #2563eb;
+            color: white;
+            box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+        }
+
+        /* --- 3. 地图区域 --- */
+        .map-viewport {
+            position: relative;
+            width: 100%;
+            height: 0;
+            padding-bottom: 75%;
+            background-color: #f9fafb;
+            overflow: hidden;
+            cursor: grab;
+            border-bottom: 1px solid #eee;
+            /* 关键：仅在地图区域禁用浏览器手势，以便 JS 处理拖拽 */
+            touch-action: none; 
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .map-viewport:active { cursor: grabbing; }
+
+        .map-container {
+            position: absolute;
+            top: 0; left: 0;
+            transform-origin: 0 0;
+            will-change: transform;
+            /* 优化渲染性能 */
+            backface-visibility: hidden;
+            -webkit-backface-visibility: hidden;
+        }
+
+        .map-image {
+            display: block;
+            width: 100%;
+            height: auto;
+            pointer-events: none;
+            user-select: none;
+            -webkit-user-drag: none;
+        }
+
+        .map-marker {
+            position: absolute;
+            width: 40px; /* 再次加大移动端触控区域 */
+            height: 40px;
+            background-color: #ef4444;
+            border: 3px solid #fff;
+            border-radius: 50%;
+            transform: translate(-50%, -100%);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 16px;
+            z-index: 10;
+            cursor: pointer;
+            transition: transform 0.2s;
+            /* 只有点击标记本身时，阻止事件冒泡 */
+            pointer-events: auto;
+        }
+        .map-marker:active { transform: translate(-50%, -100%) scale(1.1); }
+        .map-marker::after {
+            content: '';
+            position: absolute;
+            bottom: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-top: 8px solid #ef4444;
+        }
+
+        /* --- 4. 底部控制条 --- */
+        .map-controls {
+            padding: 10px 15px;
+            background: #fff;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            color: #6b7280;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .zoom-btns button {
+            background: #fff;
+            border: 1px solid #e5e7eb;
+            width: 36px;
+            height: 36px; /* 增大按钮 */
+            border-radius: 6px;
+            margin-left: 8px;
+            font-size: 20px;
+            line-height: 1;
+            cursor: pointer;
+            color: #4b5563;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* --- 5. 问卷列表 --- */
+        .question-area {
+            padding: 20px 15px;
+            background: #fff;
+            min-height: 100px;
+            /* 恢复垂直滚动 */
+            touch-action: pan-y; 
+        }
+
+        .location-group {
+            margin-bottom: 15px;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #fff;
+            transition: all 0.2s;
+        }
+
+        .location-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 15px;
+            background: #f9fafb;
+            cursor: pointer;
+            border-bottom: 1px solid transparent; 
+        }
+        
+        .location-group.expanded .location-header {
+            background: #eff6ff;
+            border-bottom-color: #dbeafe;
+        }
+
+        .location-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #374151;
+            display: flex;
+            align-items: center;
+        }
+
+        .location-badge {
+            background: #ef4444;
+            color: white;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+
+        .btn-delete-marker {
+            background-color: transparent;
+            color: #ef4444;
+            border: 1px solid transparent;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            transition: all 0.2s;
+        }
+        .btn-delete-marker:hover {
+            background-color: #fef2f2;
+            border-color: #fecaca;
+        }
+
+        .toggle-icon {
+            font-size: 12px;
+            color: #9ca3af;
+            transition: transform 0.3s;
+            margin-left: 8px;
+        }
+        .location-group.expanded .toggle-icon { transform: rotate(180deg); }
+
+        .location-content {
+            display: none;
+            padding: 16px;
+            background: #fff;
+        }
+        .location-group.expanded .location-content {
+            display: block;
+            animation: slideDown 0.3s ease;
+        }
+
+        .form-item { margin-bottom: 18px; }
+        .form-label { display: block; font-size: 14px; color: #4b5563; margin-bottom: 8px; font-weight: 600;}
+        
+        .form-input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 14px;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+        }
+        .form-input:focus { border-color: #2563eb; outline: none; ring: 2px solid #bfdbfe; }
+
+        .radio-group { display: flex; flex-wrap: wrap; gap: 8px; }
+        .radio-group label {
+            display: inline-flex;
+            align-items: center;
+            padding: 8px 14px; /* 加大点击区域 */
+            background: #f3f4f6;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #4b5563;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+        .radio-group label:hover { background: #e5e7eb; }
+        .radio-group input:checked + span { color: #2563eb; font-weight: 500; }
+        .radio-group input { margin-right: 6px; }
+
+        .empty-state {
+            text-align: center;
+            color: #9ca3af;
+            padding: 40px 0;
+            font-size: 14px;
+            background: #f9fafb;
+            border-radius: 8px;
+            border: 1px dashed #e5e7eb;
+        }
+
+        /* --- 6. 自定义模态框 (Modal) --- */
+        .modal-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            backdrop-filter: blur(2px);
+        }
+        .modal-overlay.active { display: flex; }
+        
+        .modal-box {
+            background: #fff;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 280px;
+            padding: 24px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            text-align: center;
+            animation: modalPop 0.2s ease-out;
+        }
+        
+        .modal-text {
+            font-size: 16px;
+            color: #1f2937;
+            margin-bottom: 24px;
+            line-height: 1.5;
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+        
+        .modal-btn {
+            padding: 10px 0;
+            border-radius: 6px;
+            border: none;
+            font-size: 14px;
+            cursor: pointer;
+            flex: 1;
+            font-weight: 500;
+        }
+        
+        .modal-btn-cancel {
+            background: #f3f4f6;
+            color: #4b5563;
+        }
+        
+        .modal-btn-confirm {
+            background: #2563eb;
+            color: white;
+        }
+
+        @keyframes modalPop {
+            from { transform: scale(0.9); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* --- 第二部分：嵌入表单容器 --- */
+        .embedded-form-wrapper {
+            width: 100%;
+            background: #fff;
+            min-height: 764px;
+            padding-bottom: 20px; 
+            touch-action: pan-y; /* 允许内部滚动 */
+        }
+        
+        iframe.gd-iframe {
+            width: 100%;
+            height: 764px;
+            border: none;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+<div class="custom-map-widget" id="mapWidget">
+    
+    <!-- 1. 地图部分标题 -->
+    <div class="widget-title">Part 1. 地图定点标记</div>
+
+    <div class="action-bar">
+        <button type="button" class="btn btn-reset" id="btnReset">重置所有</button>
+        <button type="button" class="btn btn-submit" id="btnFinish">保存并填入表单</button>
+    </div>
+
+    <!-- 地图可视区 -->
+    <div class="map-viewport" id="mapViewport">
+        <div class="map-container" id="mapContainer">
+            <img src="https://s41.ax1x.com/2026/01/05/pZaz8w8.jpg" alt="Map" class="map-image" id="mapImage">
+        </div>
+    </div>
+
+    <div class="map-controls">
+        <div class="map-tip" id="statusTip">请点击地图标记地点 (0/3)</div>
+        <div class="zoom-btns">
+            <button type="button" id="btnZoomIn" title="放大">+</button>
+            <button type="button" id="btnZoomOut" title="缩小">-</button>
+        </div>
+    </div>
+
+    <div class="question-area" id="questionArea"></div>
+
+    <div style="height: 10px; background-color: #f0f2f5; border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb;"></div>
+
+    <!-- 2. 表单部分标题 -->
+    <div class="section-divider-title">Part 2. 详细信息填写</div>
+
+    <!-- 嵌入 iframe -->
+    <div class="embedded-form-wrapper">
+        <iframe 
+            id="gdIframe"
+            class="gd-iframe"
+            src="https://2w23abaf.jsjform.com/f/I0BHp7?background=white&banner=show&embedded=true" 
+            allow="geolocation">
+        </iframe>
+    </div>
+
+    <div class="modal-overlay" id="customModal">
+        <div class="modal-box">
+            <div class="modal-text" id="modalMsg"></div>
+            <div class="modal-actions" id="modalActions"></div>
+        </div>
+    </div>
+</div>
+
+<a target="_blank" rel="noopener" href="https://2w23abaf.jsjform.com/f/I0BHp7" style="font-size: 14px;line-height: 16px;position:fixed;z-index:999;display: inline-block;width: 26px;word-wrap: break-word;padding: 8px 6px;color:#fff;background:#2563eb;left:20px;top:60px;border-top-left-radius:0;border-bottom-left-radius:0;border-top-right-radius:2px;border-bottom-right-radius:2px; text-decoration: none; box-shadow: 2px 2px 8px rgba(37,99,235,0.3);">查看表单</a>
+
+<script>
+    (function() {
+        // --- 🔴 关键配置区 🔴 ---
+        const GOLDEN_DATA_FIELD_ID = 'YOUR_FIELD_ID_HERE'; 
+        const GOLDEN_DATA_URL = 'https://2w23abaf.jsjform.com/f/I0BHp7';
+
+        // --- 配置 ---
+        const MAX_MARKERS = 3;
+        const MIN_SCALE = 1;
+        const MAX_SCALE = 4;
+
+        // 状态
+        let state = {
+            scale: 1,
+            pointX: 0, 
+            pointY: 0,
+            markers: [], 
+            inputCache: {} 
+        };
+
+        // --- 交互状态变量 ---
+        let isDragging = false;
+        let isZooming = false;
+        let startX = 0, startY = 0; // 拖拽/平移起始点
+        
+        // 移动端专用变量
+        let touchStartDist = 0;     // 双指起始距离
+        let startScale = 1;         // 双指缩放起始比例
+        
+        // 点击检测变量
+        let touchStartTime = 0;
+        let touchStartCoords = { x: 0, y: 0 };
+        let hasMoved = false;
+
+        // DOM 引用
+        const els = {
+            viewport: document.getElementById('mapViewport'),
+            container: document.getElementById('mapContainer'),
+            image: document.getElementById('mapImage'),
+            questionArea: document.getElementById('questionArea'),
+            statusTip: document.getElementById('statusTip'),
+            btnReset: document.getElementById('btnReset'),
+            btnFinish: document.getElementById('btnFinish'),
+            btnZoomIn: document.getElementById('btnZoomIn'),
+            btnZoomOut: document.getElementById('btnZoomOut'),
+            modal: document.getElementById('customModal'),
+            modalMsg: document.getElementById('modalMsg'),
+            modalActions: document.getElementById('modalActions'),
+            gdIframe: document.getElementById('gdIframe')
+        };
+
+        // --- 1. 模态框逻辑 ---
+        function showModal(msg, type = 'alert', onConfirm = null) {
+            els.modalMsg.innerText = msg;
+            els.modalActions.innerHTML = ''; 
+            if (type === 'confirm') {
+                const btnCancel = document.createElement('button');
+                btnCancel.className = 'modal-btn modal-btn-cancel';
+                btnCancel.innerText = '取消';
+                btnCancel.onclick = closeModal;
+                const btnOk = document.createElement('button');
+                btnOk.className = 'modal-btn modal-btn-confirm';
+                btnOk.innerText = '确定';
+                btnOk.onclick = () => { closeModal(); if (onConfirm) onConfirm(); };
+                els.modalActions.appendChild(btnCancel);
+                els.modalActions.appendChild(btnOk);
+            } else {
+                const btnOk = document.createElement('button');
+                btnOk.className = 'modal-btn modal-btn-confirm';
+                btnOk.innerText = '知道了';
+                btnOk.onclick = closeModal;
+                els.modalActions.appendChild(btnOk);
+            }
+            els.modal.classList.add('active');
+        }
+        function closeModal() { els.modal.classList.remove('active'); }
+
+        // --- 2. 初始化 ---
+        function initMap() {
+            const aspectRatio = els.image.naturalHeight / els.image.naturalWidth;
+            if (aspectRatio) {
+                els.viewport.style.paddingBottom = `${aspectRatio * 100}%`;
+            } else {
+                 els.viewport.style.paddingBottom = '75%';
+            }
+            els.container.style.width = '100%';
+            els.container.style.height = '100%';
+            updateTransform();
+            renderUI();
+        }
+        if (els.image.complete) initMap(); else els.image.onload = initMap;
+
+        // --- 3. 渲染 UI ---
+        function renderUI() {
+            els.container.querySelectorAll('.map-marker').forEach(el => el.remove());
+
+            state.markers.forEach((m, index) => {
+                const dot = document.createElement('div');
+                dot.className = 'map-marker';
+                dot.innerText = index + 1; 
+                dot.style.left = m.x + '%';
+                dot.style.top = m.y + '%';
+                
+                // 处理标记点的点击/触摸
+                const handleMarkerClick = (e) => {
+                    e.stopPropagation(); // 阻止冒泡防止触发地图点击
+                    e.preventDefault();  // 防止移动端点透
+                    const qEl = document.getElementById('q_' + m.id);
+                    if(qEl) {
+                        qEl.scrollIntoView({behavior: 'smooth', block: 'center'});
+                        m.expanded = true;
+                        renderUI();
+                    }
+                };
+
+                dot.addEventListener('click', handleMarkerClick);
+                dot.addEventListener('touchstart', (e) => {
+                    // 移动端标记点触摸特殊处理
+                    e.stopPropagation(); 
+                }, {passive: false});
+                dot.addEventListener('touchend', handleMarkerClick);
+
+                els.container.appendChild(dot);
+            });
+
+            if (state.markers.length === 0) {
+                els.questionArea.innerHTML = '<div class="empty-state">👇 点击上方地图，标记您经常去的地方</div>';
+            } else {
+                let html = '';
+                state.markers.forEach((m, index) => {
+                    const i = index + 1;
+                    const valAction = state.inputCache[`${m.id}_action`] || '';
+                    const valSatis = state.inputCache[`${m.id}_satis`] || '';
+                    const expandedClass = m.expanded ? 'expanded' : '';
+                    html += `
+                    <div class="location-group ${expandedClass}" id="q_${m.id}">
+                        <div class="location-header" data-id="${m.id}">
+                            <div class="location-title"><span class="location-badge">${i}</span> 地点 ${i}</div>
+                            <div class="header-actions">
+                                <button type="button" class="btn-delete-marker" data-delete-id="${m.id}">删除</button>
+                                <span class="toggle-icon">▼</span>
+                            </div>
+                        </div>
+                        <div class="location-content">
+                            <div class="form-item">
+                                <label class="form-label">① 你在此地方通常做什么？</label>
+                                <input type="text" class="form-input action-input" data-id="${m.id}" value="${valAction}" placeholder="例如：散步、工作...">
+                            </div>
+                            <div class="form-item">
+                                <label class="form-label">② 满意度？</label>
+                                <div class="radio-group">
+                                    ${generateRadio(m.id, '非常满意', valSatis)}
+                                    ${generateRadio(m.id, '满意', valSatis)}
+                                    ${generateRadio(m.id, '一般', valSatis)}
+                                    ${generateRadio(m.id, '不满意', valSatis)}
+                                </div>
+                            </div>
+                        </div>
+                    </div>`;
+                });
+                els.questionArea.innerHTML = html;
+                bindDynamicEvents();
+            }
+            els.statusTip.innerText = `已标记 ${state.markers.length} / ${MAX_MARKERS} 个地点`;
+        }
+        function generateRadio(id, value, currentVal) {
+            const checked = (value === currentVal) ? 'checked' : '';
+            return `<label><input type="radio" name="satis_${id}" value="${value}" ${checked} class="satis-radio" data-id="${id}"><span>${value}</span></label>`;
+        }
+        function bindDynamicEvents() {
+            els.questionArea.querySelectorAll('.btn-delete-marker').forEach(btn => {
+                btn.onclick = function(e) {
+                    e.stopPropagation();
+                    const id = this.getAttribute('data-delete-id');
+                    showModal('确定要删除这个地点吗？', 'confirm', () => handleDelete(id));
+                };
+            });
+            els.questionArea.querySelectorAll('.location-header').forEach(header => {
+                header.onclick = function() {
+                    const id = this.getAttribute('data-id');
+                    const marker = state.markers.find(m => m.id === id);
+                    if(marker) { marker.expanded = !marker.expanded; renderUI(); }
+                };
+            });
+            els.questionArea.querySelectorAll('.action-input').forEach(input => {
+                input.oninput = function() { state.inputCache[`${this.getAttribute('data-id')}_action`] = this.value; };
+            });
+            els.questionArea.querySelectorAll('.satis-radio').forEach(radio => {
+                radio.onchange = function() { if(this.checked) state.inputCache[`${this.getAttribute('data-id')}_satis`] = this.value; };
+            });
+        }
+
+        function handleAddMarker(clientX, clientY) {
+            if (state.markers.length >= MAX_MARKERS) {
+                showModal(`最多只能标记 ${MAX_MARKERS} 个地点。`, 'alert');
+                return;
+            }
+            // 计算相对于地图容器的坐标
+            const rect = els.viewport.getBoundingClientRect();
+            // 考虑当前的偏移量(state.pointX)和缩放(state.scale)
+            // 视口坐标 -> 容器内部坐标
+            // 容器当前左上角在视口中的位置：rect.left + state.pointX
+            
+            const contentX = clientX - (rect.left + state.pointX);
+            const contentY = clientY - (rect.top + state.pointY);
+            
+            // 容器当前的实际宽高
+            const currentW = rect.width * state.scale;
+            const currentH = rect.height * state.scale;
+
+            // 转为百分比
+            const xPercent = (contentX / currentW) * 100;
+            const yPercent = (contentY / currentH) * 100;
+
+            const newId = 'marker_' + Date.now();
+            state.markers.forEach(m => m.expanded = false);
+            state.markers.push({ id: newId, x: xPercent.toFixed(2), y: yPercent.toFixed(2), expanded: true });
+            renderUI();
+        }
+
+        function handleDelete(id) {
+            state.markers = state.markers.filter(m => m.id !== id);
+            delete state.inputCache[`${id}_action`];
+            delete state.inputCache[`${id}_satis`];
+            renderUI();
+        }
+        
+        // --- 4. 交互逻辑 (核心重写) ---
+        
+        function updateTransform() {
+            const viewRect = els.viewport.getBoundingClientRect();
+            const contentW = viewRect.width * state.scale;
+            const contentH = viewRect.height * state.scale;
+            const minX = viewRect.width - contentW;
+            const minY = viewRect.height - contentH;
+
+            // 边界限制
+            if (state.pointX > 0) state.pointX = 0;
+            if (state.pointX < minX) state.pointX = minX;
+            if (state.pointY > 0) state.pointY = 0;
+            if (state.pointY < minY) state.pointY = minY;
+
+            els.container.style.transform = `translate(${state.pointX}px, ${state.pointY}px) scale(${state.scale})`;
+        }
+
+        // 通用距离计算
+        function getDist(p1, p2) {
+            return Math.sqrt(Math.pow(p1.clientX - p2.clientX, 2) + Math.pow(p1.clientY - p2.clientY, 2));
+        }
+
+        // --- 桌面端鼠标事件 ---
+        els.viewport.addEventListener('mousedown', (e) => {
+            if(e.target.closest('.map-marker')) return;
+            e.preventDefault();
+            isDragging = true;
+            startX = e.clientX - state.pointX;
+            startY = e.clientY - state.pointY;
+            hasMoved = false; // 重置移动标记
+            
+            // 记录点击起始位置，用于桌面端点击判定
+            touchStartCoords = { x: e.clientX, y: e.clientY };
+        });
+        
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            e.preventDefault();
+            const dx = e.clientX - touchStartCoords.x;
+            const dy = e.clientY - touchStartCoords.y;
+            if (Math.abs(dx) > 5 || Math.abs(dy) > 5) hasMoved = true;
+
+            state.pointX = e.clientX - startX;
+            state.pointY = e.clientY - startY;
+            updateTransform();
+        });
+
+        window.addEventListener('mouseup', (e) => {
+            if (!isDragging) return;
+            isDragging = false;
+            // 桌面端点击判定：如果没怎么移动，就是点击
+            if (!hasMoved && e.target === els.viewport || e.target === els.image) {
+                handleAddMarker(e.clientX, e.clientY);
+            }
+        });
+
+        // --- 移动端触摸事件 (核心) ---
+        
+        els.viewport.addEventListener('touchstart', (e) => {
+            // 阻止默认行为以防止页面滚动，但这也会阻止 click 事件
+            // 所以我们需要手动模拟 click (Tap)
+            e.preventDefault();
+
+            if (e.touches.length === 1) {
+                // 单指操作：可能是拖拽，也可能是点击
+                isDragging = true;
+                isZooming = false;
+                hasMoved = false;
+                
+                touchStartTime = Date.now();
+                touchStartCoords = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                
+                startX = e.touches[0].clientX - state.pointX;
+                startY = e.touches[0].clientY - state.pointY;
+
+            } else if (e.touches.length === 2) {
+                // 双指操作：缩放
+                isDragging = false;
+                isZooming = true;
+                hasMoved = true; // 双指肯定不是点击
+                
+                touchStartDist = getDist(e.touches[0], e.touches[1]);
+                startScale = state.scale;
+            }
+        }, { passive: false });
+
+        els.viewport.addEventListener('touchmove', (e) => {
+            e.preventDefault(); 
+            
+            if (isZooming && e.touches.length === 2) {
+                // 双指缩放逻辑
+                const newDist = getDist(e.touches[0], e.touches[1]);
+                const scaleChange = newDist / touchStartDist;
+                
+                // 计算新缩放比例
+                let newScale = startScale * scaleChange;
+                newScale = Math.min(Math.max(MIN_SCALE, newScale), MAX_SCALE);
+                
+                // 中心缩放计算 (保持双指中心点相对位置不变)
+                const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                const centerY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                
+                // 缩放前的相对于视口的坐标
+                const rect = els.viewport.getBoundingClientRect();
+                const containerX = rect.left + state.pointX;
+                const containerY = rect.top + state.pointY;
+                
+                // 鼠标/手指在图片上的相对位置 (0-1)
+                const originX = (centerX - containerX) / (rect.width * state.scale);
+                const originY = (centerY - containerY) / (rect.height * state.scale);
+
+                state.scale = newScale;
+
+                // 更新偏移量，使缩放中心保持不变
+                const newW = rect.width * state.scale;
+                const newH = rect.height * state.scale;
+                
+                state.pointX = centerX - rect.left - (originX * newW);
+                state.pointY = centerY - rect.top - (originY * newH);
+
+                updateTransform();
+
+            } else if (isDragging && e.touches.length === 1) {
+                // 单指拖拽逻辑
+                const currentX = e.touches[0].clientX;
+                const currentY = e.touches[0].clientY;
+                
+                // 检测是否发生了实质性移动 (防抖动)
+                const moveDist = Math.sqrt(Math.pow(currentX - touchStartCoords.x, 2) + Math.pow(currentY - touchStartCoords.y, 2));
+                if (moveDist > 5) hasMoved = true;
+
+                if (hasMoved) {
+                    state.pointX = currentX - startX;
+                    state.pointY = currentY - startY;
+                    updateTransform();
+                }
+            }
+        }, { passive: false });
+
+        els.viewport.addEventListener('touchend', (e) => {
+            // 当手指抬起时
+            if (isDragging && !hasMoved) {
+                // 判定为“点击 (Tap)”
+                // 条件：单指，未发生实质移动，且时间较短（可选）
+                const timeDiff = Date.now() - touchStartTime;
+                if (timeDiff < 300) {
+                    // 使用 touchStartCoords 因为 touchend 没有 changedTouches 坐标
+                    handleAddMarker(touchStartCoords.x, touchStartCoords.y);
+                }
+            }
+
+            // 如果手指全部离开，重置状态
+            if (e.touches.length === 0) {
+                isDragging = false;
+                isZooming = false;
+            } else if (e.touches.length === 1) {
+                // 如果从双指变成单指，重新初始化单指拖拽，防止跳变
+                const t = e.touches[0];
+                startX = t.clientX - state.pointX;
+                startY = t.clientY - state.pointY;
+                isDragging = true;
+                isZooming = false;
+            }
+        });
+
+        // 按钮缩放
+        function applyZoom(newScale) {
+            const oldScale = state.scale;
+            state.scale = Math.min(Math.max(MIN_SCALE, newScale), MAX_SCALE);
+            const ratio = state.scale / oldScale;
+            const viewRect = els.viewport.getBoundingClientRect();
+            // 按钮缩放默认以中心为原点
+            const cx = viewRect.width / 2;
+            const cy = viewRect.height / 2;
+            state.pointX = cx - (cx - state.pointX) * ratio;
+            state.pointY = cy - (cy - state.pointY) * ratio;
+            updateTransform();
+        }
+        els.btnZoomIn.onclick = () => applyZoom(state.scale * 1.2);
+        els.btnZoomOut.onclick = () => applyZoom(state.scale / 1.2);
+
+        // 重置与提交
+        els.btnReset.onclick = () => {
+            if (state.markers.length === 0) return;
+            showModal('确定清空所有标记吗？', 'confirm', () => {
+                state.markers = []; state.inputCache = {};
+                state.scale = 1; state.pointX = 0; state.pointY = 0;
+                updateTransform(); renderUI();
+            });
+        };
+
+        els.btnFinish.onclick = () => {
+            const data = state.markers.map((m, idx) => {
+                const action = state.inputCache[`${m.id}_action`] || '未填写';
+                const satis = state.inputCache[`${m.id}_satis`] || '未选择';
+                return `地点${idx+1}: [${m.x}%, ${m.y}%], 行为: ${action}, 满意度: ${satis}`;
+            });
+            if(data.length === 0) { showModal('请至少标记一个地点', 'alert'); return; }
+            
+            const finalDataString = data.join('\n');
+            console.log('Map Data:', finalDataString);
+
+            if(GOLDEN_DATA_FIELD_ID === 'YOUR_FIELD_ID_HERE') {
+                showModal('⚠️ 开发者提示：请配置 GOLDEN_DATA_FIELD_ID。数据已打印到控制台。', 'alert');
+                return;
+            }
+            const newSrc = `${GOLDEN_DATA_URL}?background=white&banner=show&embedded=true&entry[${GOLDEN_DATA_FIELD_ID}]=${encodeURIComponent(finalDataString)}`;
+            els.gdIframe.src = newSrc;
+            showModal('地图数据已填入下方表单！请下滑完善剩余信息。', 'alert', () => {
+                document.querySelector('.section-divider-title').scrollIntoView({behavior: 'smooth'});
+            });
+        };
+
+    })();
+</script>
+
+</body>
+</html>
